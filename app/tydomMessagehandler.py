@@ -214,7 +214,11 @@ class TydomMessageHandler():
                 elif ("PUT /devices/data" in first) or ("/devices/cdata" in first):
                     logger.debug('PUT /devices/data message detected !')
                     try:
-                        incoming = self.parse_put_response(bytes_str)
+                        try:
+                            incoming = self.parse_put_response(bytes_str)
+                        except:
+                            # Tywatt response starts at 7
+                            incoming = self.parse_put_response(bytes_str, 7)
                         await self.parse_response(incoming)
                     except BaseException:
                         logger.error(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
@@ -293,6 +297,16 @@ class TydomMessageHandler():
                 logger.debug('Incoming message type : config detected')
                 msg_type = 'msg_config'
                 logger.debug(data)
+            elif ("cmetadata" in data):
+                logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                logger.debug('Incoming message type : cmetadata detected')
+                msg_type = 'msg_cmetadata'
+                logger.debug(data)
+            elif ("cdata" in data):
+                logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                logger.debug('Incoming message type : cdata detected')
+                msg_type = 'msg_cdata'
+                logger.debug(data)
             elif ("id" in first):
                 logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
                 logger.debug('Incoming message type : data detected')
@@ -318,6 +332,14 @@ class TydomMessageHandler():
                         # logger.debug(parsed)
                         await self.parse_config_data(parsed=parsed)
 
+                    elif (msg_type == 'msg_cmetadata'):
+                        parsed = json.loads(data)
+                        # logger.debug(parsed)
+                        await self.parse_cmeta_data(parsed=parsed)
+                    elif (msg_type == 'msg_cdata'):
+                        parsed = json.loads(data)
+                        # logger.debug(parsed)
+                        await self.parse_devices_cdata(parsed=parsed)
                     elif (msg_type == 'msg_data'):
                         parsed = json.loads(data)
                         # logger.debug(parsed)
@@ -381,6 +403,57 @@ class TydomMessageHandler():
                 device_endpoint[device_unique_id] = i["id_endpoint"]
 
         logger.info('Configuration updated')
+
+    async def parse_cmeta_data(self, parsed):
+        for i in parsed:
+            for endpoint in i["endpoints"]:
+                if len(endpoint["cmetadata"]) > 0:
+                    for elem in endpoint["cmetadata"]:
+                        if elem["name"] == "energyIndex":
+                            for params in elem["parameters"]:
+                                if params["name"] == "dest":
+                                    for dest in params["enum_values"]:
+                                        url = "/devices/" + str(i["id"]) + "/endpoints/" + str(endpoint["id"]) + "/cdata?name=energyIndex&dest=" + str(dest) + "&reset=false"
+                                        self.tydom_client.add_pull_device_url(url)
+                                        logger.debug("Add pull device : " + url)
+
+    async def parse_devices_cdata(self, parsed):
+        for i in parsed:
+            for endpoint in i["endpoints"]:
+                if len(endpoint["cdata"]) > 0:
+                    for elem in endpoint["cdata"]:
+                        if elem["name"] == "energyIndex":
+                            dest = elem["parameters"]["dest"]
+                            device_id = i["id"]
+                            endpoint_id = endpoint["id"]
+                            unique_id = str(endpoint_id) + "_" + str(device_id) + "_" + str(dest)
+                            name_of_id = str(dest)
+                            type_of_id = "energy"
+
+                            logger.debug("======[ DEVICE INFOS ]======")
+                            logger.debug("ID {}".format(device_id))
+                            logger.debug("ENDPOINT ID {}".format(endpoint_id))
+                            logger.debug("Name {}".format(name_of_id))
+                            logger.debug("Type {}".format(type_of_id))
+                            logger.debug("==========================")
+
+                            attr_conso = {
+                                'device_id': device_id,
+                                'endpoint_id': endpoint_id,
+                                'id': unique_id,
+                                'name': name_of_id,
+                                'device_type': 'sensor',
+                                'device_class': type_of_id,
+                                'unit_of_measurement': 'Wh',
+                                'state_class': 'total_increasing',
+                                'index': elem["values"]["counter"]}
+
+                            new_conso = sensor(
+                                elem_name='index',
+                                tydom_attributes_payload=attr_conso,
+                                attributes_topic_from_device='useless',
+                                mqtt=self.mqtt_client)
+                            await new_conso.update()
 
     async def parse_devices_data(self, parsed):
         for i in parsed:
@@ -654,11 +727,11 @@ class TydomMessageHandler():
                         pass
 
     # PUT response DIRTY parsing
-    def parse_put_response(self, bytes_str):
+    def parse_put_response(self, bytes_str, start=6):
         # TODO : Find a cooler way to parse nicely the PUT HTTP response
         resp = bytes_str[len(self.cmd_prefix):].decode("utf-8")
         fields = resp.split("\r\n")
-        fields = fields[6:]  # ignore the PUT / HTTP/1.1
+        fields = fields[start:]  # ignore the PUT / HTTP/1.1
         end_parsing = False
         i = 0
         output = str()
